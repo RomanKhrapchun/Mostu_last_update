@@ -208,6 +208,10 @@ const formatDate = (date, longFormat = true) => {
  * @returns {Object} Об'єкт з taxType та taxName
  */
 const determineTaxType = (charge) => {
+    console.log('🔍 === ВИЗНАЧЕННЯ ТИПУ ПОДАТКУ ===');
+    console.log('📋 payment_info:', charge.payment_info);
+    console.log('📋 tax_classifier:', charge.tax_classifier);
+    
     // Збираємо всі поля, де може міститися код податку
     const fieldsToCheck = [
         charge.payment_info || '',
@@ -215,23 +219,28 @@ const determineTaxType = (charge) => {
         charge.account_number || '',
         charge.full_document_id || '',
         JSON.stringify(charge)
-    ].join(' ').toLowerCase();
+    ].join(' ').toLowerCase().replace(/\s+/g, ''); // ✅ ВИДАЛЯЄМО ВСІ ПРОБІЛИ
     
-    // Маппінг кодів до типів податків
+    console.log('🔍 Рядок для пошуку:', fieldsToCheck.substring(0, 200));
+    
+    // Маппінг кодів до типів податків (ПОРЯДОК ВАЖЛИВИЙ - МПЗ ПЕРШИЙ!)
     const taxCodes = {
+        '11011300': { type: 'mpz', name: 'мінімального податкового зобов\'язання (МПЗ)' },
         '18010900': { type: 'rent', name: 'оренди землі з фізичних осіб' },
         '18010700': { type: 'land', name: 'земельного податку з фізичних осіб' },
         '18010300': { type: 'non_residential', name: 'податку на нерухомість (не житлова) з фізичних осіб' },
-        '18010200': { type: 'residential', name: 'податку на нерухомість (житлова) з фізичних осіб' },
-        '11011300': { type: 'mpz', name: 'мінімального податкового зобов\'язання (МПЗ)' }
+        '18010200': { type: 'residential', name: 'податку на нерухомість (житлова) з фізичних осіб' }
     };
     
     // Шукаємо відповідний код
     for (const [code, taxInfo] of Object.entries(taxCodes)) {
         if (fieldsToCheck.includes(code)) {
+            console.log(`✅ ЗНАЙДЕНО: ${code} → ${taxInfo.type}`);
             return { taxType: taxInfo.type, taxName: taxInfo.name };
         }
     }
+    
+    console.log('⚠️ Код не знайдено, використовуємо дефолт: land');
     
     // За замовчуванням - земельний податок
     return { 
@@ -794,7 +803,7 @@ const createTaxNotificationWord = async (charge, settings, debtorInfo = null) =>
             throw new Error("Відсутні блоки податків для генерації");
         }
         
-        const docBuffer = await fs.readFile("./files/docMessage.docx");
+        const docBuffer = await fs.readFile("./files/docMessageVelukiMostu.docx");
         
         const patches = {
             // ОСНОВНА ІНФОРМАЦІЯ
@@ -802,11 +811,7 @@ const createTaxNotificationWord = async (charge, settings, debtorInfo = null) =>
                 type: PatchType.PARAGRAPH,
                 children: [
                     new TextRun({
-                        text: [
-                            charge.payer_name?.toUpperCase() || "НЕ ВКАЗАНО",
-                            charge.tax_number || "",
-                            charge.address || ""
-                        ].filter(part => part).join(', '),
+                        text: charge.payer_name?.toUpperCase() || "НЕ ВКАЗАНО",
                         font: FONT_CONFIG.family,
                         size: FONT_CONFIG.sizes.small,
                         bold: true
@@ -818,6 +823,17 @@ const createTaxNotificationWord = async (charge, settings, debtorInfo = null) =>
                 children: [
                     new TextRun({
                         text: charge.tax_number || "НЕ ВКАЗАНО",
+                        font: FONT_CONFIG.family,
+                        size: FONT_CONFIG.sizes.small,
+                        bold: true
+                    })
+                ],
+            },
+            address: {
+                type: PatchType.PARAGRAPH,
+                children: [
+                    new TextRun({
+                        text: charge.address || "",
                         font: FONT_CONFIG.family,
                         size: FONT_CONFIG.sizes.small,
                         bold: true
@@ -1053,7 +1069,7 @@ const createTaxBlockContent = (block, blockNumber, settings, mainCharge) => {
                         alignment: AlignmentType.LEFT,
                         spacing: { line: 276, before: 0, after: 0 }
                     })],
-                    verticalAlign: VerticalAlign.TOP,  // ✅ ЗВЕРХУ
+                    verticalAlign: VerticalAlign.TOP,
                     margins: CELL_MARGINS
                 }),
                 new TableCell({
@@ -1067,7 +1083,7 @@ const createTaxBlockContent = (block, blockNumber, settings, mainCharge) => {
                         alignment: AlignmentType.LEFT,
                         spacing: { line: 276, before: 0, after: 0 }
                     })],
-                    verticalAlign: VerticalAlign.TOP,  // ✅ ЗВЕРХУ
+                    verticalAlign: VerticalAlign.TOP,
                     margins: CELL_MARGINS
                 }),
                 new TableCell({
@@ -1081,7 +1097,7 @@ const createTaxBlockContent = (block, blockNumber, settings, mainCharge) => {
                         alignment: AlignmentType.LEFT,
                         spacing: { line: 276, before: 0, after: 0 }
                     })],
-                    verticalAlign: VerticalAlign.TOP,  // ✅ ЗВЕРХУ
+                    verticalAlign: VerticalAlign.TOP,
                     margins: CELL_MARGINS
                 })
             ]
@@ -1090,9 +1106,15 @@ const createTaxBlockContent = (block, blockNumber, settings, mainCharge) => {
     
     // РЯДКИ З ДАНИМИ
     block.charges.forEach(charge => {
-        const taxYear = charge.document_date ? 
-                       new Date(charge.document_date).getFullYear() : 
-                       new Date().getFullYear();
+        // ДЛЯ МПЗ ЗАВЖДИ 2024, ДЛЯ ІНШИХ - РІК З ДОКУМЕНТА
+        let taxYear;
+        if (block.taxType === 'mpz') {
+            taxYear = 2024;
+        } else {
+            taxYear = charge.document_date ? 
+                     new Date(charge.document_date).getFullYear() : 
+                     new Date().getFullYear();
+        }
         
         chargesTableRows.push(
             new TableRow({
@@ -1107,7 +1129,7 @@ const createTaxBlockContent = (block, blockNumber, settings, mainCharge) => {
                             alignment: AlignmentType.LEFT,
                             spacing: { line: 276, before: 0, after: 0 }
                         })],
-                        verticalAlign: VerticalAlign.TOP,  // ✅ ЗВЕРХУ
+                        verticalAlign: VerticalAlign.TOP,
                         margins: CELL_MARGINS
                     }),
                     new TableCell({
@@ -1120,7 +1142,7 @@ const createTaxBlockContent = (block, blockNumber, settings, mainCharge) => {
                             alignment: AlignmentType.LEFT,
                             spacing: { line: 276, before: 0, after: 0 }
                         })],
-                        verticalAlign: VerticalAlign.TOP,  // ✅ ЗВЕРХУ
+                        verticalAlign: VerticalAlign.TOP,
                         margins: CELL_MARGINS
                     }),
                     new TableCell({
@@ -1133,7 +1155,7 @@ const createTaxBlockContent = (block, blockNumber, settings, mainCharge) => {
                             alignment: AlignmentType.LEFT,
                             spacing: { line: 276, before: 0, after: 0 }
                         })],
-                        verticalAlign: VerticalAlign.TOP,  // ✅ ЗВЕРХУ
+                        verticalAlign: VerticalAlign.TOP,
                         margins: CELL_MARGINS
                     })
                 ]
@@ -1227,7 +1249,7 @@ const createTaxBlockContent = (block, blockNumber, settings, mainCharge) => {
                         alignment: AlignmentType.LEFT,
                         spacing: { line: 276, before: 0, after: 0 }
                     })],
-                    verticalAlign: VerticalAlign.TOP,  // ✅ ЗВЕРХУ
+                    verticalAlign: VerticalAlign.TOP,
                     margins: CELL_MARGINS
                 }),
                 new TableCell({
@@ -1241,7 +1263,7 @@ const createTaxBlockContent = (block, blockNumber, settings, mainCharge) => {
                         alignment: AlignmentType.LEFT,
                         spacing: { line: 276, before: 0, after: 0 }
                     })],
-                    verticalAlign: VerticalAlign.TOP,  // ✅ ЗВЕРХУ
+                    verticalAlign: VerticalAlign.TOP,
                     margins: CELL_MARGINS
                 }),
                 new TableCell({
@@ -1255,7 +1277,7 @@ const createTaxBlockContent = (block, blockNumber, settings, mainCharge) => {
                         alignment: AlignmentType.LEFT,
                         spacing: { line: 276, before: 0, after: 0 }
                     })],
-                    verticalAlign: VerticalAlign.TOP,  // ✅ ЗВЕРХУ
+                    verticalAlign: VerticalAlign.TOP,
                     margins: CELL_MARGINS
                 }),
                 new TableCell({
@@ -1269,7 +1291,7 @@ const createTaxBlockContent = (block, blockNumber, settings, mainCharge) => {
                         alignment: AlignmentType.LEFT,
                         spacing: { line: 276, before: 0, after: 0 }
                     })],
-                    verticalAlign: VerticalAlign.TOP,  // ✅ ЗВЕРХУ
+                    verticalAlign: VerticalAlign.TOP,
                     margins: CELL_MARGINS
                 }),
                 new TableCell({
@@ -1283,7 +1305,7 @@ const createTaxBlockContent = (block, blockNumber, settings, mainCharge) => {
                         alignment: AlignmentType.LEFT,
                         spacing: { line: 276, before: 0, after: 0 }
                     })],
-                    verticalAlign: VerticalAlign.TOP,  // ✅ ЗВЕРХУ
+                    verticalAlign: VerticalAlign.TOP,
                     margins: CELL_MARGINS
                 }),
                 new TableCell({
@@ -1297,7 +1319,7 @@ const createTaxBlockContent = (block, blockNumber, settings, mainCharge) => {
                         alignment: AlignmentType.LEFT,
                         spacing: { line: 276, before: 0, after: 0 }
                     })],
-                    verticalAlign: VerticalAlign.TOP,  // ✅ ЗВЕРХУ
+                    verticalAlign: VerticalAlign.TOP,
                     margins: CELL_MARGINS
                 })
             ]
@@ -1318,7 +1340,7 @@ const createTaxBlockContent = (block, blockNumber, settings, mainCharge) => {
                         alignment: AlignmentType.LEFT,
                         spacing: { line: 276, before: 0, after: 0 }
                     })],
-                    verticalAlign: VerticalAlign.TOP,  // ✅ ЗВЕРХУ
+                    verticalAlign: VerticalAlign.TOP,
                     margins: CELL_MARGINS
                 }),
                 new TableCell({
@@ -1331,7 +1353,7 @@ const createTaxBlockContent = (block, blockNumber, settings, mainCharge) => {
                         alignment: AlignmentType.LEFT,
                         spacing: { line: 276, before: 0, after: 0 }
                     })],
-                    verticalAlign: VerticalAlign.TOP,  // ✅ ЗВЕРХУ
+                    verticalAlign: VerticalAlign.TOP,
                     margins: CELL_MARGINS
                 }),
                 new TableCell({
@@ -1344,7 +1366,7 @@ const createTaxBlockContent = (block, blockNumber, settings, mainCharge) => {
                         alignment: AlignmentType.LEFT,
                         spacing: { line: 276, before: 0, after: 0 }
                     })],
-                    verticalAlign: VerticalAlign.TOP,  // ✅ ЗВЕРХУ
+                    verticalAlign: VerticalAlign.TOP,
                     margins: CELL_MARGINS
                 }),
                 new TableCell({
@@ -1357,7 +1379,7 @@ const createTaxBlockContent = (block, blockNumber, settings, mainCharge) => {
                         alignment: AlignmentType.LEFT,
                         spacing: { line: 276, before: 0, after: 0 }
                     })],
-                    verticalAlign: VerticalAlign.TOP,  // ✅ ЗВЕРХУ
+                    verticalAlign: VerticalAlign.TOP,
                     margins: CELL_MARGINS
                 }),
                 new TableCell({
@@ -1370,7 +1392,7 @@ const createTaxBlockContent = (block, blockNumber, settings, mainCharge) => {
                         alignment: AlignmentType.LEFT,
                         spacing: { line: 276, before: 0, after: 0 }
                     })],
-                    verticalAlign: VerticalAlign.TOP,  // ✅ ЗВЕРХУ
+                    verticalAlign: VerticalAlign.TOP,
                     margins: CELL_MARGINS
                 }),
                 new TableCell({
@@ -1383,7 +1405,7 @@ const createTaxBlockContent = (block, blockNumber, settings, mainCharge) => {
                         alignment: AlignmentType.LEFT,
                         spacing: { line: 276, before: 0, after: 0 }
                     })],
-                    verticalAlign: VerticalAlign.TOP,  // ✅ ЗВЕРХУ
+                    verticalAlign: VerticalAlign.TOP,
                     margins: CELL_MARGINS
                 })
             ]
@@ -1419,7 +1441,77 @@ const createTaxBlockContent = (block, blockNumber, settings, mainCharge) => {
 // Функція для додавання довідкової інформації
 const addReferenceInformation = (patches, settings, debtorInfo, charge) => {
     // Визначаємо тип податку для charge
-    const { taxType } = determineTaxType(charge);
+    const { taxType, taxName } = determineTaxType(charge);
+    
+    // 🔥 ДОДАЄМО ОСНОВНІ ПЛЕЙСХОЛДЕРИ
+    patches.tax_type_name = {
+        type: PatchType.PARAGRAPH,
+        children: [
+            new TextRun({
+                text: taxName,
+                font: FONT_CONFIG.family,
+                size: FONT_CONFIG.sizes.small,
+                bold: true
+            })
+        ],
+    };
+    
+    patches.plot_number = {
+        type: PatchType.PARAGRAPH,
+        children: [
+            new TextRun({
+                text: charge.full_document_id || charge.account_number || "НЕ ВКАЗАНО",
+                font: FONT_CONFIG.family,
+                size: FONT_CONFIG.sizes.small
+            })
+        ],
+    };
+    
+    const chargeAmount = Number(charge.amount || charge.grandTotal || 0);
+    patches.tax_amount = {
+        type: PatchType.PARAGRAPH,
+        children: [
+            new TextRun({
+                text: chargeAmount.toFixed(2),
+                font: FONT_CONFIG.family,
+                size: FONT_CONFIG.sizes.small
+            })
+        ],
+    };
+    
+    patches.amount_in_words = {
+        type: PatchType.PARAGRAPH,
+        children: [
+            new TextRun({
+                text: convertNumberToWords(chargeAmount),
+                font: FONT_CONFIG.family,
+                size: FONT_CONFIG.sizes.small
+            })
+        ],
+    };
+    
+    const currentTaxRequisites = getRequisitesForTaxType(settings, taxType);
+    patches.recipient_name = {
+        type: PatchType.PARAGRAPH,
+        children: [
+            new TextRun({
+                text: currentTaxRequisites?.recipientname || "НЕ ВКАЗАНО",
+                font: FONT_CONFIG.family,
+                size: FONT_CONFIG.sizes.small
+            })
+        ],
+    };
+    
+    patches.debt_charge_account = {
+        type: PatchType.PARAGRAPH,
+        children: [
+            new TextRun({
+                text: currentTaxRequisites?.account || debt_charge_account || "НЕ ВКАЗАНО",
+                font: FONT_CONFIG.family,
+                size: FONT_CONFIG.sizes.small
+            })
+        ],
+    };
     
     // Заборгованості
     const debtAmounts = {
@@ -1444,7 +1536,7 @@ const addReferenceInformation = (patches, settings, debtorInfo, charge) => {
         };
     });
 
-    // ⭐ КРИТИЧНО: Додаємо призначення платежів для всіх типів включно з 'main'
+    // Додаємо призначення платежів для всіх типів включно з 'main'
     const taxTypes = ['main', 'non_residential', 'residential', 'land', 'rent', 'mpz'];
     
     taxTypes.forEach(type => {

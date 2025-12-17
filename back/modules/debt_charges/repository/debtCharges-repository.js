@@ -192,22 +192,23 @@ class DebtChargesRepository {
             cadastral_number,
             document_date,
             delivery_date,
-            status
+            status,
+            address
         } = debtChargeData;
 
         const sql = `
             INSERT INTO ower.debt_charges (
                 tax_number, payer_name, payment_info, tax_classifier,
                 account_number, full_document_id, amount, cadastral_number,
-                document_date, delivery_date, status
-            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+                document_date, delivery_date, status, address
+            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
             RETURNING *
         `;
 
         const values = [
             tax_number, payer_name, payment_info, tax_classifier,
             account_number, full_document_id, amount, cadastral_number,
-            document_date, delivery_date, status || 'Не вручено'
+            document_date, delivery_date, status || 'Не вручено', address
         ];
 
         return await sqlRequest(sql, values);
@@ -238,57 +239,78 @@ class DebtChargesRepository {
             console.log('📋 Sample record structure:', Object.keys(sampleRecord));
             
             // Валідуємо перший запис
-            this.validateRecordStructure(sampleRecord);
-            
-            // Використовуємо менші батчі для надійності
-            const BATCH_SIZE = 50; // Ще менший батч для максимальної надійності
-            let totalImported = 0;
-            let totalErrors = 0;
+            if (!sampleRecord.tax_number || !sampleRecord.payer_name || !sampleRecord.amount) {
+                throw new Error('Відсутні обов\'язкові поля у даних');
+            }
+
+            const BATCH_SIZE = 1000;
+            let totalInserted = 0;
 
             for (let i = 0; i < debtChargesArray.length; i += BATCH_SIZE) {
                 const batch = debtChargesArray.slice(i, i + BATCH_SIZE);
-                const batchNumber = Math.floor(i / BATCH_SIZE) + 1;
-                const totalBatches = Math.ceil(debtChargesArray.length / BATCH_SIZE);
-                
-                console.log(`📊 Processing batch ${batchNumber}/${totalBatches} (${batch.length} records)`);
-                
-                try {
-                    const batchResult = await this.insertBatch(batch);
-                    totalImported += batchResult;
+                console.log(`📤 Processing batch ${Math.floor(i / BATCH_SIZE) + 1}/${Math.ceil(debtChargesArray.length / BATCH_SIZE)}`);
+
+                const values = [];
+                const placeholders = [];
+
+                batch.forEach((charge, idx) => {
+                    const baseIndex = idx * 12;
+                    placeholders.push(
+                        `($${baseIndex + 1}, $${baseIndex + 2}, $${baseIndex + 3}, $${baseIndex + 4}, 
+                        $${baseIndex + 5}, $${baseIndex + 6}, $${baseIndex + 7}, $${baseIndex + 8}, 
+                        $${baseIndex + 9}, $${baseIndex + 10}, $${baseIndex + 11}, $${baseIndex + 12})`
+                    );
                     
-                    const failed = batch.length - batchResult;
-                    if (failed > 0) {
-                        totalErrors += failed;
-                        console.log(`⚠️ Batch ${batchNumber}: ${batchResult} succeeded, ${failed} failed`);
-                    } else {
-                        console.log(`✅ Batch ${batchNumber} completed: ${batchResult} records inserted`);
-                    }
+                    values.push(
+                        charge.tax_number || null,
+                        charge.payer_name || null,
+                        charge.payment_info || null,
+                        charge.tax_classifier || null,
+                        charge.account_number || null,
+                        charge.full_document_id || null,
+                        charge.amount || 0,
+                        charge.cadastral_number || null,
+                        charge.document_date || null,
+                        charge.delivery_date || null,
+                        charge.status || 'Не вручено',
+                        charge.address || null
+                    );
+                });
+
+                const sql = `
+                    INSERT INTO ower.debt_charges (
+                        tax_number, payer_name, payment_info, tax_classifier,
+                        account_number, full_document_id, amount, cadastral_number,
+                        document_date, delivery_date, status, address
+                    ) VALUES ${placeholders.join(', ')}
+                    RETURNING id
+                `;
+
+                try {
+                    const result = await sqlRequest(sql, values);
+                    totalInserted += result.length;
+                    console.log(`✅ Batch inserted: ${result.length} records`);
                 } catch (batchError) {
-                    console.error(`❌ Batch ${batchNumber} failed completely:`, batchError.message);
-                    totalErrors += batch.length;
-                    continue;
-                }
-                
-                // Невелика пауза між батчами для зменшення навантаження на БД
-                if (batchNumber % 10 === 0) {
-                    await new Promise(resolve => setTimeout(resolve, 100));
+                    console.error(`❌ Batch insert failed:`, batchError);
+                    
+                    console.log('🔄 Falling back to single record insertion...');
+                    const successful = await this.insertRecordsOneByOne(batch);
+                    totalInserted += successful;
+                    console.log(`✅ Single insertion completed: ${successful}/${batch.length} records`);
                 }
             }
-            
-            console.log(`🎉 Bulk insert completed: ${totalImported}/${debtChargesArray.length} records imported`);
-            if (totalErrors > 0) {
-                console.log(`⚠️ Total errors: ${totalErrors}`);
-            }
+
+            console.log(`🎉 Total inserted: ${totalInserted}/${debtChargesArray.length} records`);
             
             return {
-                imported: totalImported,
+                imported: totalInserted,
                 total: debtChargesArray.length,
-                errors: totalErrors
+                success: totalInserted > 0
             };
 
         } catch (error) {
             console.error('❌ Bulk insert error:', error);
-            throw new Error(`Помилка масового вставлення: ${error.message}`);
+            throw new Error(`Помилка масового завантаження: ${error.message}`);
         }
     }
 
@@ -378,8 +400,8 @@ class DebtChargesRepository {
             INSERT INTO ower.debt_charges (
                 tax_number, payer_name, payment_info, tax_classifier,
                 account_number, full_document_id, amount, cadastral_number,
-                document_date, delivery_date, status
-            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+                document_date, delivery_date, status, address
+            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
         `;
 
         const values = [
@@ -393,7 +415,8 @@ class DebtChargesRepository {
             charge.cadastral_number || null,
             charge.document_date || null,
             charge.delivery_date || null,
-            charge.status || 'Не вручено'
+            charge.status || 'Не вручено',
+            charge.address || null
         ];
 
         return await sqlRequest(sql, values);

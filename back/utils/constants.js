@@ -14,7 +14,7 @@ const displayKindergartenFields = ['id', 'child_name', 'date', 'group_number','k
 const displayRequisitesFilterFields = ['id', 'kved', 'iban', 'edrpou', 'service_group_id'];
 const displayServicesFilterFields = ['id', 'name', 'unit', 'price', 'service_group_id'];
 const displayBillsFilterFields = ['id', 'account_number', 'payer', 'service_id', 'quantity', 'total_price', 'status'];
-const displayDebtChargesFields = ['id', 'tax_number', 'payer_name', 'payment_info','tax_classifier', 'account_number', 'full_document_id', 'document_date', 'delivery_date', 'cadastral_number', 'amount', 'status'];
+const displayDebtChargesFields = ['id', 'tax_number', 'payer_name', 'payment_info', 'tax_classifier', 'account_number', 'full_document_id', 'document_date', 'delivery_date', 'cadastral_number', 'amount', 'status', 'address']
 const displayOwnerLogFields = ['id', 'date', 'name', 'chat_id', 'ip', 'source_display', 'formatted_date', 'search_year', 'search_month_name'];
 const displayFieldsPhone = ['clientid', 'phone', 'hasNumber', 'isChecked'];
 

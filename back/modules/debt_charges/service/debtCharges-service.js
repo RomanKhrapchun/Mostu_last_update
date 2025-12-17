@@ -211,8 +211,12 @@ class DebtChargesService {
                     payment_info: 'Платіж',
                     tax_classifier: 'Номер',
                     account_number: 'Дата',
-                    full_document_id: 'Дата вручення платнику податків',
-                    status: 'Статус'
+                    full_document_id: 'Дата вручення платнику податкового повідомлення',
+                    document_date: 'Дата документа',
+                    delivery_date: 'Дата вручення',
+                    cadastral_number: 'Кадастровий номер',
+                    status: 'Статус',
+                    address: 'Адреса'
                 }
             };
         }
@@ -238,7 +242,8 @@ class DebtChargesService {
                     document_date: 'D_MESSP',
                     delivery_date: 'DATEVP',
                     cadastral_number: 'Кадастровий номер',
-                    status: 'Статус ППР'
+                    status: 'Статус ППР',
+                    address: 'Adress'
                 }
             };
         }
@@ -283,6 +288,10 @@ class DebtChargesService {
             ],
             delivery_date: [
                 /дата.*вруч/i, /дата.*дост/i, /datevp/i, /вруч/i
+            ],
+            address: [
+                /адрес/i, /address/i, /adress/i, /місцезнаходж/i,
+                /місце.*прожив/i, /location/i
             ]
         };
 
@@ -524,7 +533,7 @@ class DebtChargesService {
                     errors.push(`Рядок ${rowNumber}: Відсутня назва платника`);
                     return;
                 }
-                transformedRow.payer_name = String(payerName).trim().substring(0, 255); // Обмежуємо довжину
+                transformedRow.payer_name = String(payerName).trim().substring(0, 255);
 
                 let amount = this.extractValue(row, mapping.amount);
                 if (!amount && amount !== 0) {
@@ -544,6 +553,7 @@ class DebtChargesService {
                 transformedRow.tax_classifier = this.extractAndTrim(row, mapping.tax_classifier, 100);
                 transformedRow.account_number = this.extractAndTrim(row, mapping.account_number, 50);
                 transformedRow.cadastral_number = this.extractAndTrim(row, mapping.cadastral_number, 100);
+                transformedRow.address = this.extractAndTrim(row, mapping.address, 500);
                 
                 // Генерація ID документу
                 transformedRow.full_document_id = this.extractAndTrim(row, mapping.full_document_id, 100) || 
@@ -570,6 +580,7 @@ class DebtChargesService {
                         tax_number: transformedRow.tax_number,
                         payer_name: transformedRow.payer_name?.substring(0, 30) + '...',
                         amount: transformedRow.amount,
+                        address: transformedRow.address?.substring(0, 30) + '...' || 'немає',
                         status: transformedRow.status
                     });
                 }
@@ -785,7 +796,11 @@ class DebtChargesService {
                 }
             }
             
-            const result = await this.createTaxNotificationDocument(charge, settings, debtorInfo);
+            // 🔥 КЛЮЧОВА ЗМІНА: Підготовка даних з taxBlocks та charges
+            const preparedCharge = this.prepareTaxDataForDocument(charge, settings, debtorInfo);
+            
+            // Генерація документа з підготовленими даними
+            const result = await this.createTaxNotificationDocument(preparedCharge, settings, debtorInfo);
             
             if (!result) {
                 throw new Error("Не вдалося згенерувати документ податкового повідомлення");
@@ -816,7 +831,7 @@ class DebtChargesService {
             throw new Error(`Помилка генерації податкового повідомлення: ${error.message}`);
         }
     }
-
+    
     async createTaxNotificationDocument(charge, settings, debtorInfo) {
         try {
             // Використовуємо роутер для автоматичного вибору генератора на основі community_name
@@ -867,6 +882,222 @@ class DebtChargesService {
         } catch (error) {
             throw new Error(`Помилка отримання довідникових даних: ${error.message}`);
         }
+    }
+
+    prepareTaxDataForDocument(charge, settings, debtorInfo) {
+        console.log('🔧 === ПІДГОТОВКА ПОДАТКОВИХ ДАНИХ ===');
+        console.log('📊 Charge amount:', charge.amount);
+        console.log('📊 Tax classifier:', charge.tax_classifier);
+        console.log('📊 DebtorInfo present:', !!debtorInfo);
+        
+        const taxBlocks = [];
+        let grandTotal = 0;
+        
+        // Мапінг класифікаторів на типи податків
+        const classifierMapping = {
+            '18010300': {
+                type: 'non_residential',
+                name: 'Податок на нерухоме майно (нежитлова нерухомість)',
+                purposeField: 'non_residential_debt_purpose',
+                accountField: 'non_residential_debt_account',
+                edrpouField: 'non_residential_debt_edrpou',
+                recipientField: 'non_residential_debt_recipientname'
+            },
+            '18010200': {
+                type: 'residential',
+                name: 'Податок на нерухоме майно (житлова нерухомість)',
+                purposeField: 'residential_debt_purpose',
+                accountField: 'residential_debt_account',
+                edrpouField: 'residential_debt_edrpou',
+                recipientField: 'residential_debt_recipientname'
+            },
+            '18010700': {
+                type: 'land',
+                name: 'Земельний податок',
+                purposeField: 'land_debt_purpose',
+                accountField: 'land_debt_account',
+                edrpouField: 'land_debt_edrpou',
+                recipientField: 'land_debt_recipientname'
+            },
+            '18010900': {
+                type: 'rent',
+                name: 'Орендна плата за землю',
+                purposeField: 'orenda_debt_purpose',
+                accountField: 'orenda_debt_account',
+                edrpouField: 'orenda_debt_edrpou',
+                recipientField: 'orenda_debt_recipientname'
+            },
+            '11011300': {
+                type: 'mpz',
+                name: 'Мінімальне податкове зобов\'язання',
+                purposeField: 'mpz_purpose',
+                accountField: 'mpz_account',
+                edrpouField: 'mpz_edrpou',
+                recipientField: 'mpz_recipientname'
+            }
+        };
+        
+        // 🔥 1. ВИЗНАЧАЄМО ТИП НАРАХУВАННЯ З charge
+        if (charge.amount && charge.amount > 0) {
+            const amount = Number(charge.amount);
+            
+            // Використовуємо determineTaxType для визначення типу
+            const { determineTaxType } = require('../../../utils/generateDocxVelukiMostu');
+            const detectedTax = determineTaxType(charge);
+            console.log(`🎯 Тип нарахування: ${detectedTax.taxType} (${detectedTax.taxName})`);
+            
+            // Знаходимо taxInfo за detectedTax.taxType
+            const taxInfo = Object.values(classifierMapping).find(
+                info => info.type === detectedTax.taxType
+            ) || classifierMapping['18010700'];
+            
+            const classifier = Object.keys(classifierMapping).find(
+                key => classifierMapping[key].type === detectedTax.taxType
+            ) || '18010700';
+            
+            // Формуємо призначення платежу
+            let purpose = charge.payment_info || settings[taxInfo.purposeField] || 'Сплата податкового зобов\'язання';
+            
+            // Додаємо податковий номер до призначення
+            if (charge.tax_number) {
+                purpose = purpose.replace(/\{?\{?\s*tax_number\s*\}?\}?/gi, charge.tax_number);
+                if (!purpose.includes(charge.tax_number)) {
+                    purpose = `${purpose} ІПН: ${charge.tax_number}`;
+                }
+            }
+            
+            // Створюємо масив charges для цього блоку
+            const chargeItem = {
+                document_date: charge.document_date || new Date().toISOString().split('T')[0],
+                full_document_id: charge.full_document_id || charge.account_number || '',
+                amount: amount
+            };
+            
+            // Додаємо блок
+            taxBlocks.push({
+                taxType: taxInfo.type,
+                taxName: taxInfo.name,
+                amount: amount,
+                totalAmount: amount,
+                code: classifier,
+                purpose: purpose,
+                account: settings[taxInfo.accountField] || '',
+                edrpou: settings[taxInfo.edrpouField] || '',
+                recipientname: settings[taxInfo.recipientField] || '',
+                document_id: charge.full_document_id || charge.account_number || '',
+                document_date: charge.document_date || new Date().toISOString().split('T')[0],
+                charges: [chargeItem]
+            });
+            
+            grandTotal += amount;
+            console.log(`✅ Додано нарахування: ${taxInfo.name} = ${amount} грн`);
+        }
+        
+        // 🔥 2. ДОДАЄМО БОРГИ З debtor (ЯКЩО Є)
+        if (debtorInfo) {
+            console.log('📋 Перевірка історичних боргів з debtor...');
+            
+            const debtorTaxes = [
+                { field: 'non_residential_debt', info: classifierMapping['18010300'] },
+                { field: 'residential_debt', info: classifierMapping['18010200'] },
+                { field: 'land_debt', info: classifierMapping['18010700'] },
+                { field: 'orenda_debt', info: classifierMapping['18010900'] },
+                { field: 'mpz', info: classifierMapping['11011300'] }
+            ];
+            
+            debtorTaxes.forEach(tax => {
+                const debtAmount = Number(debtorInfo[tax.field]) || 0;
+                
+                if (debtAmount > 0) {
+                    const existingBlock = taxBlocks.find(block => block.taxType === tax.info.type);
+                    
+                    if (existingBlock) {
+                        // Додаємо до існуючого блоку
+                        console.log(`⚠️ Додаємо історичний борг ${debtAmount} грн до існуючого блоку ${tax.info.type}`);
+                        
+                        const debtorChargeItem = {
+                            document_date: debtorInfo.date || new Date().toISOString().split('T')[0],
+                            full_document_id: debtorInfo.identification || 'ІСТОРИЧНИЙ БОРГ',
+                            amount: debtAmount
+                        };
+                        
+                        existingBlock.charges.push(debtorChargeItem);
+                        existingBlock.amount += debtAmount;
+                        existingBlock.totalAmount += debtAmount;
+                    } else {
+                        // Створюємо новий блок для історичного боргу
+                        let purpose = settings[tax.info.purposeField] || `Сплата ${tax.info.name.toLowerCase()}`;
+                        
+                        if (debtorInfo.identification) {
+                            purpose = `${purpose} ІПН: ${debtorInfo.identification}`;
+                        }
+                        
+                        const debtorChargeItem = {
+                            document_date: debtorInfo.date || new Date().toISOString().split('T')[0],
+                            full_document_id: debtorInfo.identification || '',
+                            amount: debtAmount
+                        };
+                        
+                        taxBlocks.push({
+                            taxType: tax.info.type,
+                            taxName: tax.info.name,
+                            amount: debtAmount,
+                            totalAmount: debtAmount,
+                            code: Object.keys(classifierMapping).find(key => 
+                                classifierMapping[key].type === tax.info.type
+                            ) || '',
+                            purpose: purpose,
+                            account: settings[tax.info.accountField] || '',
+                            edrpou: settings[tax.info.edrpouField] || '',
+                            recipientname: settings[tax.info.recipientField] || '',
+                            document_id: debtorInfo.identification || '',
+                            document_date: debtorInfo.date || new Date().toISOString().split('T')[0],
+                            charges: [debtorChargeItem]
+                        });
+                        
+                        console.log(`✅ Додано історичний борг: ${tax.info.name} = ${debtAmount} грн`);
+                    }
+                    
+                    grandTotal += debtAmount;
+                }
+            });
+        }
+        
+        // 3. ВАЛІДАЦІЯ
+        if (taxBlocks.length === 0) {
+            console.error('❌ Не знайдено жодного блоку податків!');
+            throw new Error('Відсутні податкові нарахування для генерації документа');
+        }
+        
+        const primaryTaxType = taxBlocks[0].taxType;
+        
+        console.log(`✅ Підготовлено ${taxBlocks.length} блоків податків`);
+        console.log(`💰 Загальна сума: ${grandTotal.toFixed(2)} грн`);
+        console.log(`🎯 Перший тип: ${primaryTaxType}`);
+        
+        // Діагностика структури
+        taxBlocks.forEach((block, index) => {
+            console.log(`📦 Block ${index + 1}:`, {
+                type: block.taxType,
+                name: block.taxName,
+                amount: block.amount,
+                totalAmount: block.totalAmount,
+                chargesCount: block.charges?.length || 0
+            });
+        });
+        
+        // Формуємо повний об'єкт charge
+        const preparedCharge = {
+            ...charge,
+            taxBlocks: taxBlocks,
+            grandTotal: grandTotal,
+            primaryTaxType: primaryTaxType,
+            payer_name: charge.payer_name || debtorInfo?.name || 'НЕ ВКАЗАНО',
+            tax_number: charge.tax_number || debtorInfo?.identification || 'НЕ ВКАЗАНО',
+            address: charge.address || ''
+        };
+        
+        return preparedCharge;
     }
 }
 
